@@ -1,0 +1,353 @@
+---
+title: "Exploratory Data Analysis"
+author: "Siphiwe Bogatsu"
+date: "2025-10-04"
+Purpose: "Focus on education infrastructure projects from IRM v1.3, compute
+          duration & cost escalation, and run a compact EDA."
+output: pdf_document
+---
+
+#----------------- Reproduce --------------------------------------------------
+```{r}
+install.packages("renv")
+renv::restore()
+```
+
+
+#- --------- ----- Load the data ----------------------------------------------
+
+```{r}
+all_irm_years = read_delim("zaf-nt-irm-v1.3.txt")
+```
+
+#---------------  Subsetting --------------------------------------------------
+
+```{r}
+all_irm = all_irm_years |>
+  
+  
+  
+  # project duration 
+  mutate( proj_dur    = ifelse(dat_contr_cstr_end < dat_est_cstr_end, 
+                               difftime(dat_est_cstr_end, dat_start, units = "days"), difftime(dat_contr_cstr_end,  dat_start, units = "days")), 
+          prjtd_total = rowSums(across(starts_with("prjtd")), na.rm = TRUE),
+          exp_total   = rowSums(across(starts_with("exp")), na.rm = TRUE)) |> 
+  
+  # subset all completed projects 
+  filter(stat_idms_gate %in% c("stage 6: handover", "stage 7: close out") &
+           
+          # remove projects started before 2015 
+          dat_start_yr >= 2015 &
+           
+          # subset education
+          proj_sect %in% c("education")  &  
+          
+          # focus only on education infrastructure grant because  most projects are from there
+            
+          fund_prim == "education infrastructure grant" & 
+            
+          # filter out those projects with < 0 
+          proj_dur > 0 & 
+          
+          # some project cost are equal to one which is nonsense 
+          exp_total > 50000 &
+          
+          prjtd_total > 50000 &
+           
+          # remove all projects with significant missingnes 
+          !is.na(stat_infra_det) &
+         
+          # remove all projects with NAs in dates
+          !is.na(dat_est_cstr_end)  & !is.na(dat_contr_cstr_end))
+
+
+# remove columns that show years after 2024/2025 financial year 
+all_irm = all_irm |> 
+  
+  select(-c(
+    
+    budg_main_cstr_25_26, budg_main_cstr_26_27, budg_main_cstr_27_28, 
+    budg_adj_cstr_25_26, budg_adj_cstr_26_27, budg_adj_cstr_27_28, 
+    budg_main_pf_25_26, budg_main_pf_26_27, budg_adj_pf_25_26, budg_adj_pf_26_27, 
+    prjtd_exp_q1_25_26, prjtd_exp_q2_25_26, prjtd_exp_q3_25_26, prjtd_exp_q4_25_26,
+    budg_main_pf_27_28, budg_adj_pf_27_28, prjtd_exp_q1_26_27, 
+    prjtd_exp_q1_27_28 , prjtd_exp_q2_26_27, prjtd_exp_q2_27_28, 
+    prjtd_exp_q3_26_27, prjtd_exp_q3_27_28,
+    prjtd_exp_q4_26_27, prjtd_exp_q4_27_28 ,exp_q1_25_26, 
+    exp_q1_26_27 , exp_q1_27_28, exp_q2_25_26, 
+    exp_q2_26_27, exp_q2_27_28, exp_q3_25_26 ,exp_q3_26_27, exp_q3_27_28,
+    exp_q4_25_26, exp_q4_26_27, exp_q4_27_28, proj_coord, irm_year, proj_sect,  
+    stat_idms_gate, stat_commit, dat_proj_complete, proj_delivery_mech, fund_prim, 
+    fund_status, stat_proj,  fac_name, proj_dpt, 
+  ))
+
+
+# assume that if a numeric variable (above) has an NA, it means that no allocation was made in that period. Give a zero 
+all_irm = all_irm |>  
+  mutate(
+    across(where(is.numeric),
+           ~replace_na(., 0)
+     )
+  )
+
+all_irm = all_irm |> 
+  filter(geo_lat != 0 & geo_long != 0 )
+
+# aggregate the schools to primary, bording, combined etc 
+all_irm = all_irm |>
+  mutate( stat_infra_det = case_when(
+    
+    stat_infra_det == "large primary school" ~ "primary", 
+    stat_infra_det == "large secondary school" ~ "secondary", 
+    stat_infra_det == "medium primary school" ~ "primary", 
+    stat_infra_det == "medium secondary school" ~ "secondary", 
+    stat_infra_det == "mega primary school" ~ "primary", 
+    stat_infra_det == "mega secondary school" ~ "secondary", 
+    stat_infra_det == "micro primary school" ~ "primary", 
+    stat_infra_det == "micro secondary school" ~ "secondary", 
+    stat_infra_det == "small primary school" ~ "primary",
+    stat_infra_det == "small secondary school" ~ "secondary", 
+    stat_infra_det == "boarding school" ~ "other", 
+    stat_infra_det == "office accomodation" ~ "other", 
+    stat_infra_det == "special school" ~ "other",
+    stat_infra_det == "condition assessment" ~ "other", 
+    
+    TRUE ~ stat_infra_det 
+  ))
+
+# Determine cost escalations 
+all_irm = all_irm |>
+            mutate(cost_escalate = (exp_total - prjtd_total)/ prjtd_total)
+  
+#  skim through. 
+all_irm |> skim()
+```
+
+# ------------------ Exploratory Data Analysis -------------------------------- 
+
+```{r}
+# What is the distribution of cost escalations? 
+
+all_irm |> filter(cost_escalate < 50) |>
+  ggplot(aes(x = cost_escalate)) + 
+           geom_histogram(aes(y = (..density..)), fill = "white", color = "black", binwidth = 1)+ 
+           xlim(-6,55 ) + 
+           ylab("Frequency (%)") + 
+           xlab("Cost escalation (%)")
+
+
+# construct a binomial two sided test 
+all_irm = all_irm |>
+  mutate(signal = ifelse(cost_escalate > 0, 1, 0))
+
+##  count the number of 1s 
+num_1 = sum(all_irm$signal)
+
+## total number of observations 
+n    = length(all_irm$signal)
+
+## Perform two sided binomial test 
+result = binom.test(x = num_1, 
+                    n = n, 
+                    p = 0.5, 
+                    alternative = "two.sided")
+
+# construct a Wilcoxon test  
+
+df = all_irm |> select(signal, cost_escalate)
+
+## check for group summaries 
+aggregate(cost_escalate ~ signal, data = df, mean)
+
+wilcox_result = wilcox.test(cost_escalate ~ signal,
+                            data = df,
+                            alternative = "two.sided")
+
+
+# what is the histogram of school types ? 
+
+all_irm |> filter(stat_infra_det == "primary") |> 
+  ggplot(aes(x = cost_escalate)) + 
+  geom_histogram(aes(y = (..density..)), fill = "pink", color = "black", binwidth = 1)+ 
+  xlim(-6, 55) + 
+  ylab("Frequency (%)") + 
+  xlab("Cost escalation (%)")
+
+all_irm |> filter(stat_infra_det == "secondary") |> 
+  ggplot(aes(x = cost_escalate)) + 
+  geom_histogram(aes(y = (..density..)), fill = "yellow", color = "black", binwidth = 1)+ 
+  xlim(-6, 55 ) + 
+  ylab("Frequency (%)") + 
+  xlab("Cost escalation (%)")
+
+
+all_irm |> filter(stat_infra_det == "combined school") |> 
+  ggplot(aes(x = cost_escalate)) + 
+  geom_histogram(aes(y = (..density..)), fill = "green", color = "black", binwidth = 1)+ 
+  xlim(-6, 55 ) + 
+  ylab("Frequency (%)") + 
+  xlab("Cost escalation (%)")
+
+all_irm |> filter(stat_infra_det == "other") |> 
+  ggplot(aes(x = cost_escalate)) + 
+  geom_histogram(aes(y = (..density..)), fill = "skyblue", color = "black", binwidth = 1)+ 
+  xlim(-6, 55 ) + 
+  ylab("Frequency (%)") + 
+  xlab("Cost escalation (%)")
+
+# summary information about project types 
+all_irm |> group_by(stat_infra_det) |>
+  summarise( n(), 
+             av.cost.esca = mean(cost_escalate), 
+             sd           = sd(cost_escalate))
+
+## Are they statistically different from zero 
+all_irm|> filter(stat_infra_det == "other") |> select(cost_escalate) |>
+  t.test(mu = 0, alternative = "two.sided")
+
+## An F test: school type has an effect in cost escalate? 
+df = all_irm |> select(cost_escalate, stat_infra_det) 
+  
+anova_result = kruskal.test(cost_escalate ~ stat_infra_det, data = df)
+
+## Subdivide the school types into investment type and summarise
+ all_irm |> filter(stat_infra_det == "primary" ) |> 
+           select(cost_escalate, fund_inv_type)|> 
+           group_by(fund_inv_type) |> summarise(av.cost = mean(cost_escalate), 
+                                                sd      = sd(cost_escalate))
+ df = all_irm |> filter(stat_infra_det == "other" ) |> 
+   select(cost_escalate, fund_inv_type)       
+
+anova_result =  kruskal.test(cost_escalate ~ fund_inv_type, data = df)
+
+
+
+# Now, let us turn our attention towards geographical variation: provincial departments 
+
+# firstly, draw the box plot 
+all_irm |> group_by(loc_prov) |>
+  ggplot(aes(x = cost_escalate, y = loc_prov)) + 
+  geom_boxplot() + 
+  xlim(-6, 55 ) + 
+  ylab("Provincial department") + 
+  xlab("Cost escalation (%)")
+
+# summary information 
+all_irm |> group_by(loc_prov, stat_infra_det) |>
+  summarise( n(), 
+             av.cost.esca = mean(cost_escalate), 
+             sd           = sd(cost_escalate))
+
+# What about the F test ? 
+df = all_irm |> select(cost_escalate, loc_prov) 
+
+anova_result = kruskal.test(cost_escalate ~ loc_prov, data = df)
+
+# Are they statistically differrent from zero ? 
+all_irm |> filter(stat_infra_det == "primary" ) |> 
+  select(cost_escalate, loc_prov)|> 
+  group_by(loc_prov) |> summarise(av.cost = mean(cost_escalate), 
+                                       sd      = sd(cost_escalate))
+
+df = all_irm |> filter(stat_infra_det == "other" ) |> 
+  select(cost_escalate, loc_prov)       
+
+anova_result =  kruskal.test(cost_escalate ~ loc_prov, data = df)
+
+
+
+# Test for interaction between province and school type 
+int_model = lm(cost_escalate ~ loc_prov*stat_infra_det, data = all_irm)
+summary(int_model)
+
+# Test effect of province on cost escalation (all projects)
+kruskal.test(cost_escalate ~ loc_prov, data = all_irm)
+
+# compare provinces on each school type 
+df = all_irm |> filter(stat_infra_det == "primary")
+
+t.test(cost_escalate ~ loc_prov, data = df)
+
+# Are we learning over time? 
+all_irm |> select(cost_escalate, dat_start, stat_infra_det) |> 
+  ggplot(aes(x = dat_start, y = cost_escalate, shape = stat_infra_det)) + 
+  geom_point() + 
+  geom_smooth(aes(group = 1), method = "loess", se = FALSE, color = "red") + 
+  labs(x = "Year of decision to build",  
+       y =  "Cost escalation (%)", 
+       shape = "Type of school")
+
+df = all_irm |> 
+  select(cost_escalate, dat_est_cstr_end)       
+
+anova_result =  kruskal.test(cost_escalate ~ dat_est_cstr_end, data = df)
+
+# Are sluggish projects more expensive ? 
+all_irm |> select(cost_escalate, proj_dur, stat_infra_det) |> 
+  ggplot(aes(x = proj_dur, y = cost_escalate, shape = stat_infra_det)) + 
+  geom_point() + 
+  geom_smooth(aes(group = 1), method = "loess", se = FALSE, color = "red") + 
+  labs(x = "Length of project duration (in days)",  
+       y =  "Cost escalation (%)", 
+       shape = "Type of school")
+
+all_irm$stat_infra_det = as.factor(all_irm$stat_infra_det)
+model1 = lm(cost_escalate ~ proj_dur * stat_infra_det, data = all_irm)
+summary(model1)
+
+all_irm$fund_inv_type= as.factor(all_irm$fund_inv_type)
+model1 = lm(cost_escalate ~ proj_dur * fund_inv_type, data = all_irm)
+summary(model1)
+
+all_irm$loc_prov= as.factor(all_irm$loc_prov)
+model1 = lm(cost_escalate ~ proj_dur * loc_prov, data = all_irm)
+summary(model1)
+
+## Is project durartion different for different project types or investment types ? 
+df = all_irm |> 
+  select(proj_dur, loc_prov, stat_infra_det) |> 
+  filter(stat_infra_det == "other")
+
+anova_result =  kruskal.test(proj_dur ~ loc_prov, data = df)
+
+
+## box plots 
+ all_irm |> 
+  select(proj_dur, fund_inv_type) |> 
+ ggplot(aes(x  = proj_dur, y = fund_inv_type)) + 
+ geom_boxplot() +
+   labs(x = "Length of project duration (in days)",  
+        y =  "Type of infrastructure investment"
+       )
+
+ 
+# Do bigger projects have bigger cost escalations ? 
+ 
+# here is a logarithmic plot of cost escalations against projected expenditure 
+ all_irm |> select(cost_escalate, prjtd_total, stat_infra_det) |> 
+   ggplot(aes(x = log10(prjtd_total), y = cost_escalate, shape = stat_infra_det)) + 
+   geom_point() + 
+   geom_smooth(aes(group = 1), method = "loess", se = FALSE, color = "red") + 
+   labs(x = "Estimated costs (million rands), logarithmic scale",  
+        y =  "Cost escalation (%)", 
+        shape = "Type of school")
+# Is there a relationship between the school type 
+ 
+df = all_irm |>
+  select(cost_escalate, stat_infra_det, prjtd_total)|>
+  mutate(prjtd_total = log10(prjtd_total))
+
+model1 = lm(cost_escalate ~prjtd_total *stat_infra_det , data = df)
+summary(model1)
+
+kruskal.test(prjtd_total ~ cost_escalate, data = df)
+
+```
+
+# ------------- Write ----------------------------------------------------------
+
+```{r}
+write_delim(all_irm, "zaf-nt-irm-v1.4.txt")
+```
+
+

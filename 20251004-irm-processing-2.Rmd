@@ -1,0 +1,164 @@
+---
+title: "IRM Processing 2"
+author: "Siphiwe Bogatsu"
+date: "2025-10-04"
+Purpose: "Fix a handful of malformed dates and, where completion year is missing,
+          impute it as the last financial year the project appears in the IRM tool."
+output: html_document
+---
+
+#----------------- Reproduce --------------------------------------------------
+```{r}
+install.packages("renv")
+renv::restore()
+```
+
+
+#- --------- ----- Load the data ----------------------------------------------
+
+```{r}
+all_irm_years = read_delim("zaf-nt-irm-v1.1.txt")
+```
+
+# ----------------- Processing --------------------------------------------------
+
+```{r}
+# Keep this list small, auditable, and easy to extend.
+fix_dates <- function(x) {
+repl <- c(
+# dat_start fixes
+"0014-04-01" = "2014-04-01",
+"0200-07-01" = "2000-07-01",
+"0201-11-01" = "2001-11-01",
+"0201-04-01" = "2001-04-01",
+"0202-04-01" = "2002-04-01",
+"0203-12-01" = "2003-12-01",
+"0204-02-04" = "2004-02-04",
+"0204-04-01" = "2004-04-01",
+"0205-06-19" = "2005-06-19",
+"0213-04-01" = "2013-04-01",
+"0214-04-01" = "2014-04-01",
+"0217-02-09" = "2017-02-09",
+"0218-01-15" = "2018-01-15",
+"0218-11-01" = "2018-11-01",
+"0222-04-01" = "2022-04-01",
+"0224-04-06" = "2024-04-06",
+"1017-03-15" = "2017-03-15",
+"1111-11-11" = "2011-11-11",
+"1924-03-01" = "2024-03-01",
+"1924--03-01"= "2024-03-01",
+# completion
+"2615-06-12" = "2015-06-12",
+# est construction end
+"1111-11-12" = "2011-11-12"
+)
+# Replace only when exact key matches
+out <- dplyr::coalesce(unname(repl[x]), x)
+return(out)
+}
+
+
+# Apply targeted date fixes
+all_irm_years <- all_irm_years |>
+mutate(
+dat_start = fix_dates(dat_start),
+dat_proj_complete = fix_dates(dat_proj_complete),
+dat_est_cstr_end = fix_dates(dat_est_cstr_end)
+)
+
+
+
+# Parse dates & derive years 
+
+parse_date <- function(x) {
+# accepts "YYYY-mm-dd"; tries dmy if needed
+suppressWarnings(lubridate::parse_date_time(x, orders = c("ymd", "dmy"))) |> as.Date()
+}
+
+
+all_irm_years <- all_irm_years |>
+mutate(
+dat_start = parse_date(dat_start),
+dat_proj_complete = parse_date(dat_proj_complete),
+dat_cstr_start = parse_date(dat_cstr_start),
+dat_est_cstr_end = parse_date(dat_est_cstr_end),
+dat_contr_cstr_end = parse_date(dat_contr_cstr_end),
+dat_proj_compl_yr = lubridate::year(dat_proj_complete)
+)
+```
+
+# -------------- Utility: IRM Financial Year Parsing --------------------------
+
+```{r}
+# irm_year is "15_16" meaning FY 2015/16. We'll map to start/end calendar years.
+fy_start_year <- function(fy) as.integer(paste0(substr(fy, 1, 2))) + 2000
+fy_end_year <- function(fy) as.integer(paste0(substr(fy, 4, 5))) + 2000
+
+```
+
+# --------------- Test: How often completion year == last IRM FY --------------
+
+```{r}
+match_compl_years <- all_irm_years |>
+select(proj_id, proj_sect, irm_year, dat_proj_compl_yr, stat_proj, stat_idms_gate) |>
+filter(!is.na(dat_proj_compl_yr)) |>
+group_by(proj_id) |>
+mutate(last_fy = dplyr::last(irm_year)) |>
+slice_tail(n = 1) |>
+ungroup() |>
+mutate(
+fy1 = fy_start_year(last_fy),
+fy2 = fy_end_year(last_fy),
+match = as.integer(dat_proj_compl_yr %in% c(fy1, fy2))
+)
+
+
+prop_matches <- 100 * mean(match_compl_years$match)
+message(sprintf("Share where completion year matches last IRM FY: %.1f%%", prop_matches))
+```
+
+#-------------- Impute missing completion year for completed projects --- ------ 
+
+```{r}
+completed_status <- c("Final Completion", "Practical Completion (100%)", "Terminated")
+completed_gates <- c("Stage 6: Handover", "Stage 7: Close out")
+
+
+all_irm_years_modified <- all_irm_years |>
+filter(stat_proj %in% completed_status, stat_idms_gate %in% completed_gates) |>
+group_by(proj_id) |>
+mutate(
+last_fy = dplyr::last(irm_year),
+dat_proj_compl_yr = dplyr::coalesce(dat_proj_compl_yr, fy_end_year(last_fy)),
+# Guard: if last_fy is beyond data horizon (e.g., 26_27, 27_28), leave as NA
+dat_proj_compl_yr = ifelse(fy_end_year(last_fy) > 2025, NA_integer_, dat_proj_compl_yr)
+) |>
+ungroup() |>
+select(-last_fy)
+
+
+# Keep everything else as-is and bind back
+all_irm_years <- all_irm_years |>
+filter(!(stat_proj %in% completed_status & stat_idms_gate %in% completed_gates)) |>
+bind_rows(all_irm_years_modified)
+```
+
+# ---- Light standardisation (avoid lowercasing IDs/names) ---------------------
+
+# Only normalise selected categorical fields; keep identifiers & free text intact.
+
+```{r}
+cat_cols <- c("stat_proj", "stat_idms_gate", "proj_sect", "proj_delivery_mech", "loc_prov")
+all_irm_years <- all_irm_years |>
+mutate(across(any_of(cat_cols), ~ as.factor(.x)))
+
+# Peek 
+all_irm_years |> skim()
+```
+
+# -------------------- Write --------------------------------------------------
+
+```{r}
+write_delim(all_irm_years, "zaf-nt-irm-v1.2.txt")
+```
+

@@ -1,0 +1,391 @@
+---
+title: "IRM Modelling"
+author: "Siphiwe Bogatsu"
+Purpose: "Clean modelling-ready data, visualise correlations, and fit a small 
+          suite of classifiers (logit, ridge, lasso, random forest, SVMs) with 
+          sane CV"
+date: "2025-10-04"
+output: html_document
+---
+
+
+#----------------- Reproduce --------------------------------------------------
+```{r}
+install.packages("renv")
+renv::restore()
+```
+
+
+#- --------- ----- Load the data ----------------------------------------------
+
+```{r}
+all_irm_years = read_delim("zaf-nt-irm-v1.4.txt")
+
+# Peek 
+all_irm_years |> skim()
+```
+
+#---------------- Model Pre-processing -----------------------------------------
+```{r}
+# remove variables not need for modelling
+all_irm = all_irm |> 
+                  select(-c(proj_id, proj_name,  dat_start, dat_est_cstr_end,
+                         dat_cstr_start, dat_contr_cstr_end, prjtd_total, 
+                         exp_total, cost_total), 
+                         -starts_with("exp"),
+                         -starts_with("prjtd")) |> 
+  
+                  # turn cost escalate into classes 
+                  mutate(cost_escalate = ifelse(cost_escalate > 0, "overrun", "underrun"), 
+                    
+                    across(where(is.character), as.factor))
+
+
+### Correlation plot 
+numeric_irm = all_irm |>  
+              select(where(is.numeric))
+
+cor_matrix = cor(numeric_irm)
+corrplot(cor_matrix, method = "color", type = "upper", tl.cex = 0.8)
+
+
+# Scale numeric variables 
+numeric_irm   = all_irm |>  
+                select(where(is.numeric)) |>
+                scale()
+factor_irm    = all_irm|>
+                    select(where(is.factor))
+
+all_irm_stand = data.frame(numeric_irm,factor_irm) |>
+                    drop_na()
+```
+
+# -------------- Split into Train and Test ------------------------------------
+
+```{r}
+all_irm_split = initial_split(all_irm_stand, strata =  cost_escalate)
+all_irm_train = training(all_irm_split)
+all_irm_test  = testing(all_irm_split)
+
+```
+
+# ----------------- Fit A Vanilla Logit Model ----------------------------------
+
+```{r}
+irm_lr = glm(cost_escalate ~ ., 
+             data = all_irm_train, 
+             family = "binomial")
+
+irm_lr |> tidy()
+
+
+# set up cross validation 
+fit_control = trainControl(
+  
+  method = "cv", 
+  number = 5, 
+  classProbs = TRUE, 
+  savePredictions = "final"
+)
+
+# Train the logistic 
+logit_model = train(
+  
+  cost_escalate ~., 
+  data = all_irm_train, 
+  family = "binomial", 
+  method = "glm", 
+  metric = "ROC", 
+  trControl = fit_control
+)
+
+# Summary of the model 
+print(logit_model)
+
+
+# Predict on full training set 
+train_preds  = predict(logit_model, newdata = all_irm_train)
+train_confmat = confusionMatrix(train_preds, all_irm_train$cost_escalate)
+print(train_confmat)
+
+
+# Predict on test set 
+test_preds = predict(logit_model, newdata = all_irm_test)
+test_confmat = confusionMatrix(test_preds, all_irm_test$cost_escalate)
+print(test_confmat)
+```
+
+
+# ------------------ Fit a Ridge Regression ------------------------------------
+
+```{r}
+# Extract X and Y matrices 
+x =  model.matrix(cost_escalate ~., data = all_irm_train)[,-1]
+y = all_irm_train$cost_escalate
+
+x_test = model.matrix(cost_escalate ~., data = all_irm_test)[,-1]
+y_test = all_irm_test$cost_escalate
+
+
+# apply cross validation
+
+ridge_cv = cv.glmnet(
+               x = x, 
+               y = as.matrix(y), 
+               family = 'binomial',
+               alpha = 0, 
+               type.measure = "class", 
+               nfolds = 5
+               )
+
+plot(ridge_cv, xvar = "lambda", label = T)
+
+
+
+# Plot 
+plot(ridge_cv)
+abline(h = ridge_cv$cvup[which.min(ridge_cv$cvm)], lty = 2)
+round(cbind(coef(ridge_cv, s = "lambda.min"), coef(ridge_cv, s = "lambda.1se")), 3)
+
+
+# predict on full training set 
+ridge_train_prob = predict(ridge_cv, newx = x, s = "lambda.min", type = "response")
+ridge_train_class = ifelse(ridge_train_prob > 0.5, 1, 0)
+ridge_train_factor = ridge_train_class |> as.factor()
+y = ifelse(y == "overrun", 1, 0) |> as.factor()
+
+
+train_confmat = confusionMatrix(ridge_train_factor, 
+                                y)
+print(train_confmat)
+
+# predict on test set 
+
+ridge_test_prob = predict(ridge_cv, newx = x_test, s = "lambda.min", type = "response")
+ridge_test_class = ifelse(ridge_test_prob > 0.5, 1, 0)
+ridge_test_factor = ridge_test_class |> as.factor()
+y_test = ifelse(y_test == "overrun", 1, 0) |> as.factor()
+
+
+test_confmat = confusionMatrix(ridge_test_factor, 
+                                y_test)
+print(test_confmat)
+
+```
+
+# --------------------- Fit a Lasso Regression ---------------------------------
+
+```{r}
+# Extract X and Y matrices 
+x =  model.matrix(cost_escalate ~., data = all_irm_train)[,-1]
+y = all_irm_train$cost_escalate
+
+x_test = model.matrix(cost_escalate ~., data = all_irm_test)[,-1]
+y_test = all_irm_test$cost_escalate
+
+
+# apply cross validation
+
+lasso_cv = cv.glmnet(
+  x = x, 
+  y = as.matrix(y), 
+  family = 'binomial',
+  alpha = 1, 
+  type.measure = "class", 
+  nfolds = 5
+)
+
+plot(lasso_cv, xvar = "lambda", label = T)
+
+
+
+# Plot 
+plot(lasso_cv)
+abline(h = ridge_cv$cvup[which.min(ridge_cv$cvm)], lty = 2)
+round(cbind(coef(ridge_cv, s = "lambda.min"), coef(ridge_cv, s = "lambda.1se")), 3)
+
+
+# predict on full training set 
+lasso_train_prob = predict(lasso_cv, newx = x, s = "lambda.1se", type = "response")
+lasso_train_class = ifelse(lasso_train_prob > 0.5, 1, 0)
+lasso_train_factor = lasso_train_class |> as.factor()
+y = ifelse(y == "overrun", 1, 0) |> as.factor()
+
+
+train_confmat = confusionMatrix(lasso_train_factor, 
+                                y)
+print(train_confmat)
+
+
+
+# predict on test set 
+
+lasso_test_prob = predict(lasso_cv, newx = x_test, s = "lambda.1se", type = "response")
+lasso_test_class = ifelse(lasso_test_prob > 0.5, 1, 0)
+lasso_test_factor = lasso_test_class |> as.factor()
+y_test = ifelse(y_test == "overrun", 1, 0) |> as.factor()
+
+
+test_confmat = confusionMatrix(lasso_test_factor, 
+                               y_test)
+print(test_confmat)
+
+
+```
+
+
+
+# -------------------- Fit a Random Forest -----------------------------------
+
+```{r}
+tune_grid = expand.grid (
+  
+  mtry = 2:(ncol(all_irm_train) - 1),
+  splitrule   = c("gini", "hellinger"), 
+  min.node.size = c(1,5,10)
+)
+
+fit_control = trainControl(method = "oob", verboseIter = F)
+
+
+# train rf model with cv 
+rf_model = train(
+  
+  cost_escalate ~ ., 
+  data          = all_irm_train, 
+  method        = "ranger", 
+  trControl     = fit_control, 
+  tuneGrid      = tune_grid, 
+  importance    = "impurity",
+  num.trees     = 1000,
+  
+)
+
+# Show the best tuning parameters 
+print(rf_model$best_tune)
+plot(rf_model)
+
+# Predict on full training set 
+train_preds = predict(rf_model, newdata = all_irm_train)
+confusionMatrix(train_preds, all_irm_train$cost_escalate)
+
+# Predict on test set 
+test_preds  = predict(rf_model, newdata = all_irm_test)
+confMat     = confusionMatrix(test_preds, all_irm_test$cost_escalate)
+print(confMat)
+```
+
+# --------------- Fit a linear SVM ----------------------------------------------
+
+```{r}
+fit_control = trainControl(
+  
+  method = "cv", 
+  number = 5, 
+  classProbs = TRUE, 
+  savePredictions = "final", 
+  search = "grid"
+  
+)
+
+tune_grid = expand.grid(C = seq(0, 2, by = 0.1))
+
+# Train the linear SVM using caret 
+svm_model_lr = train(
+  
+  cost_escalate ~., 
+  data = all_irm_train, 
+  method = "svmLinear", 
+  trControl = fit_control, 
+  metric = "Accuracy", 
+  tuneGrid= tune_grid
+)
+
+
+plot(svm_model_lr)
+
+# Predict on full training set 
+train_preds = predict(svm_model_lr, newdata = all_irm_train)
+confusionMatrix(train_preds, all_irm_train$cost_escalate)
+
+
+# Predict on test data 
+test_preds = predict(svm_model_lr, newdata = all_irm_test)
+confusionMatrix(test_preds, all_irm_test$cost_escalate)
+
+
+```
+
+# ---------------- Fit a radial SVM ------------------------------------------
+
+```{r}
+fit_control = trainControl(
+  
+  method = "cv", 
+  number = 5, 
+  classProbs = TRUE, 
+  savePredictions = "final", 
+  search = "grid"
+  
+)
+
+tune_grid = expand.grid(C = seq(0, 2, by = 0.1), 
+                        sigma = seq(0, 1, by = 0.1))
+
+# Train the kernel SVM using caret 
+svm_model_kr = train(
+  
+  cost_escalate ~., 
+  data = all_irm_train, 
+  method = "svmRadialSigma", 
+  trControl = fit_control, 
+  metric = "Accuracy", 
+  tuneGrid= tune_grid
+)
+
+
+plot(svm_model_lr)
+
+# Predict on full training set 
+train_preds = predict(svm_model_lr, newdata = all_irm_train)
+confusionMatrix(train_preds, all_irm_train$cost_escalate)
+
+
+# Predict on test data 
+test_preds = predict(svm_model_lr, newdata = all_irm_test)
+confusionMatrix(test_preds, all_irm_test$cost_escalate)
+```
+
+
+# ------------------- Assess Variable Importance -------------------------------
+
+```{r}
+#  logistic 
+log_varimp = varImp(logit_model, scale = TRUE)
+print(log_varimp)
+plot(log_varimp, top = 15)
+
+# ridge 
+ridge_varimp  = varImp(ridge_cv, scale = TRUE)
+print(ridge_varimp)
+plot(ridge_varimp, top = 15)
+
+# lasso 
+lasso_varimp  = varImp(lasso_cv, scale = TRUE)
+print(lasso_varimp)
+plot(lasso_varimp, top = 10)
+
+# random forest 
+rf_varimp  = varImp(rf_model, scale = TRUE)
+print(rf_varimp)
+plot(rf_varimp, top = 15)
+
+# svm linear 
+svm_lr_varimp  = varImp(svm_model_lr, scale = TRUE)
+print(svm_lr_varimp )
+plot(svm_lr_varimp , top = 15)
+
+
+
+```
+

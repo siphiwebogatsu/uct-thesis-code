@@ -1,0 +1,256 @@
+---
+title: "IRM Processing 1"
+Purpose: "Load and standardize National Treasury IRM project data across years, apply consistent statuses, and export a clean dataset."
+author: "Siphiwe Bogatsu"
+date: "2025-10-04"
+output: pdf_document
+---
+
+#--------------------------Reproduce ------------------------------------------
+
+```{r}
+install.packages("renv")
+renv::init()
+```
+
+# ---------------------------Packages -----------------------------------------
+# Use pacman for convenience; fall back to install if needed
+
+```{r}
+# Use pacman for convenience; fall back to install if needed
+if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
+
+pacman::p_load(
+  tidyverse, readxl, sf, lubridate, stringdist,
+  skimr, haven
+)
+```
+
+#---------------------------- Import data -------------------------------------
+
+```{r}
+# Define years
+years = sprintf("%02d_%02d", 15:27, 16:28)  # Generates "15_16", "16_17", ..., "27_28"
+
+# load the data files
+all_irm_years =  map_dfr(years, function(year) 
+{
+  file_name  = paste0("zaf-nt-irm-", year, ".dta")
+  
+  read_dta(file_name) |>  
+    mutate(irm_year = year) |>
+    mutate(across(where(is.numeric) | where(is.Date) | where(is.logical), as.character))
+})
+
+# Peek 
+all_irm_years |> skim()
+
+```
+
+
+#--------------------- Standardize the naming convention ------------------
+
+```{r}
+# Keep only columns you need, then rename to concise snake_case
+all_irm_years=  all_irm_years |>
+  select(
+    `projectid`, `projectname`, province, department, sector, facilityname, deliverymechanism, 
+    localmunicipality, districtmunicipality, latitude, longitude,
+    projectstatus, idmsgate, commitmentstatus, infrastructuredetails, 
+    `projectstartdate`, `projectcompletiondate`, `estimatedconstructionenddate`,
+    `constructionstartdate`, `estimatedconstructionenddate`, `contractedconstructionenddate`,
+    `professionalfees`, `constructioncosts`,
+    `mainbudgetappropriationprofessio`, `adjustmentbudgetappropriationpro`, 
+    `mainbudgetappropriationconstruct`, `adjustmentbudgetappropriationcon`, 
+    `variationorders`, `totalprojectcost`, 
+    `projectedexpenditureq1`, `projectedexpenditureq2`, `projectedexpenditureq3`, `projectedexpenditureq4`, 
+    `actualexpenditureq1`, `actualexpenditureq2`, `actualexpenditureq3`, `actualexpenditureq4`, 
+    `budgetprogramme`, `primaryfundingsource`, natureofinvestment, `fundingstatus`,
+    projectcoordinator, irm_year
+  ) |>
+  
+  rename(
+    proj_id            = projectid,
+    proj_name          = projectname,
+    fac_name           = facilityname,
+    loc_prov           = province, 
+    proj_delivery_mech = deliverymechanism, 
+    proj_dpt           =  department, 
+    proj_sect          =  sector,
+    loc_local_munic    = localmunicipality, 
+    loc_dist_munic     = districtmunicipality, 
+    geo_lat            = latitude, 
+    geo_long           = longitude, 
+    stat_proj          = projectstatus, 
+    stat_idms_gate     = idmsgate, 
+    stat_commit        = commitmentstatus, 
+    stat_infra_det     = infrastructuredetails, 
+    dat_start          = `projectstartdate`, 
+    dat_proj_complete  = `projectcompletiondate`,
+    dat_est_cstr       = `estimatedconstructionenddate`,
+    dat_cstr_start     = `constructionstartdate`,
+    dat_est_cstr_end   = `estimatedconstructionenddate`,
+    dat_contr_cstr_end = `contractedconstructionenddate`, 
+    cost_pf            = `professionalfees`, 
+    cost_cstr          = `constructioncosts`, 
+    cost_var           = `variationorders`, 
+    cost_total         = `totalprojectcost`, 
+    budg_main_pf       = `mainbudgetappropriationprofessio`, 
+    budg_adj_pf        = `adjustmentbudgetappropriationpro`,
+    budg_main_cstr     = `mainbudgetappropriationconstruct`, 
+    budg_adj_cstr      = `adjustmentbudgetappropriationcon`, 
+    
+    prjtd_exp_q1       = `projectedexpenditureq1`,
+    prjtd_exp_q2       = `projectedexpenditureq2`,
+    prjtd_exp_q3       = `projectedexpenditureq3`,
+    prjtd_exp_q4       = `projectedexpenditureq4`,
+    
+    exp_q1             = actualexpenditureq1, 
+    exp_q2             = actualexpenditureq2,
+    exp_q3             = actualexpenditureq3,
+    exp_q4             = actualexpenditureq4,
+    
+    fund_budg_prog     =`budgetprogramme`, 
+    fund_prim          =`primaryfundingsource`, 
+    fund_inv_type      = natureofinvestment, 
+    fund_status        = `fundingstatus`, 
+    proj_coord          = projectcoordinator
+  )
+
+
+# some variables are required to be numeric 
+ 
+all_irm_years = all_irm_years |> 
+                      mutate(across(c(cost_pf, cost_cstr, cost_var, cost_total,
+                                      prjtd_exp_q1, prjtd_exp_q2, prjtd_exp_q3, prjtd_exp_q4, 
+                                      budg_main_pf, budg_adj_pf, budg_main_cstr,
+                                      budg_adj_cstr,
+                                      exp_q1, exp_q2,exp_q3,exp_q4, 
+                                      ), as.numeric))
+
+```
+
+
+# --------------------- Harmonize labels (IDMS gate & project status)- ------------------------------------------
+
+```{r}
+# Minor label fixes 
+all_irm_years = all_irm_years |>
+      mutate(
+                stat_idms_gate = case_when(
+                stat_idms_gate == "Stage 6a: Design documentation (Production information)" ~ "Stage 4: Design Documentation",
+                stat_idms_gate == "Stage 9: Close out" ~ "Stage 7: Close out",
+                TRUE ~ stat_idms_gate
+                ),
+                proj_delivery_mech = case_when(
+                proj_delivery_mech == "Sub-Contract" ~ "Packaged with Sub-Contracts",
+                proj_delivery_mech == "Sub-Project" ~ "Packaged with Sub-Projects",
+                TRUE ~ proj_delivery_mech
+                )
+      )
+
+# Ensure IDMS gate aligns with project status
+all_irm_years <- all_irm_years |>
+mutate(
+    stat_idms_gate = case_when(
+    # Construction phases -> Works
+    stat_proj %in% c("Construction 1% - 25%", "Construction 26% - 50%", "Construction 51% - 75%", "Construction 76% - 99%") &
+    stat_idms_gate %in% c("Stage 1: Initiation/ Pre-feasibility", "Stage 2: Concept/ Feasibility", "Stage 3: Design Development", "Stage 4: Design Documentation", "Stage 6: Handover", "Stage 7: Close out") ~ "Stage 5: Works",
+    
+    
+    # Design -> Design Documentation
+    stat_proj == "Design" & stat_idms_gate %in% c("Stage 1: Initiation/ Pre-feasibility", "Stage 2: Concept/ Feasibility") ~ "Stage 3: Design Development",
+    stat_proj == "Design" & stat_idms_gate %in% c("Stage 5: Works", "Stage 6: Handover", "Stage 7: Close out", "Stage : Works_old") ~ "Stage 4: Design Documentation",
+    
+    
+    # Feasibility -> Concept/Design Development
+    stat_proj == "Feasibility" & stat_idms_gate == "Stage 1: Initiation/ Pre-feasibility" ~ "Stage 2: Concept/ Feasibility",
+    stat_proj == "Feasibility" & stat_idms_gate %in% c("Stage 4: Design Documentation", "Stage 5: Works", "Stage 7: Close out", "Stage : Works_old") ~ "Stage 3: Design Development",
+    
+    
+    # Final/Practical completion -> Handover
+    stat_proj %in% c("Final Completion", "Practical Completion (100%)") & stat_idms_gate %in% c(
+    "Stage 1: Initiation/ Pre-feasibility", "Stage 2: Concept/ Feasibility", "Stage 3: Design Development",
+    "Stage 4: Design Documentation", "Stage 5: Works", "Stage 7: Close out"
+    ) ~ "Stage 6: Handover",
+    
+    
+    # Not applicable
+    stat_proj == "Not Applicable" & stat_idms_gate %in% c(
+    "Other- Programme / Project Administration",
+    "Stage 1: Initiation/ Pre-feasibility", "Stage 2: Concept/ Feasibility", "Stage 3: Design Development",
+    "Stage 4: Design Documentation", "Stage 5: Works", "Stage 7: Close out", "Stage : Works_old"
+    ) ~ "Not Applicable",
+    
+    
+    # Compensation of Employees -> Programme / Project Administration
+    stat_proj == "Other - Compensation of Employees" & stat_idms_gate %in% c(
+    "Stage 1: Initiation/ Pre-feasibility", "Stage 2: Concept/ Feasibility", "Stage 4: Design Documentation",
+    "Stage 5: Works", "Stage 6: Handover", "Stage 7: Close out", "Stage : Works_old"
+    ) ~ "Other- Programme / Project Administration",
+    
+    
+    # Packaged Programme
+    stat_proj == "Other - Packaged Ongoing Project" & stat_idms_gate %in% c(
+    "Stage 1: Initiation/ Pre-feasibility", "Stage 2: Concept/ Feasibility", "Stage 3: Design Development",
+    "Stage 4: Design Documentation", "Stage 5: Works", "Stage 7: Close out"
+    ) ~ "Packaged Programme",
+    
+    
+    # Site handed over -> Works
+    stat_proj == "Site Handed - Over to Contractor" & stat_idms_gate %in% c(
+    "Stage 1: Initiation/ Pre-feasibility", "Stage 2: Concept/ Feasibility", "Stage 3: Design Development",
+    "Stage 4: Design Documentation", "Stage 6: Handover"
+    ) ~ "Stage 5: Works",
+    
+    
+    # Tender -> Design Documentation
+    stat_proj == "Tender" & stat_idms_gate %in% c(
+    "Stage 1: Initiation/ Pre-feasibility", "Stage 2: Concept/ Feasibility", "Stage 3: Design Development",
+    "Stage 5: Works", "Stage : Works_old"
+    ) ~ "Stage 4: Design Documentation",
+    
+    
+    # Project initiation -> Pre-feasibility
+    stat_proj == "Project Initiation" & stat_idms_gate %in% c(
+    "Stage 2: Concept/ Feasibility", "Stage 3: Design Development", "Stage 4: Design Documentation",
+    "Stage 5: Works", "Stage 6: Handover", "Stage 7: Close out",
+    "Other- Programme / Project Administration", "Stage : Works_old"
+    ) ~ "Stage 1: Initiation/ Pre-feasibility",
+    
+    
+    TRUE ~ stat_idms_gate
+    )
+)
+
+```
+
+# -------------------- Drop Inconsistent project completions -------------------
+
+```{r}
+# Projects that report a completion date but are not in late-stage gates/statuses are removed.
+flag_inconsistent = all_irm_years |>
+select(proj_id, irm_year, dat_proj_complete, stat_proj, stat_idms_gate) |>
+filter(
+!is.na(dat_proj_complete), dat_proj_complete != as.Date(NA),
+!is.na(dat_proj_complete), dat_proj_complete != "",
+!stat_idms_gate %in% c("Stage 6: Handover", "Stage 7: Close out", "Packaged Programme"),
+!stat_proj %in% c("Terminated")
+)
+
+
+all_irm_years = anti_join(all_irm_years, flag_inconsistent, by = "proj_id")
+
+
+rm(flag_inconsistent)
+```
+
+
+# -------------------- Write the 1st version of the data ----------------------
+
+```{r}
+# write this version 
+write_delim(all_irm_years, "zaf-nt-irm-v1.1.txt")
+```
+
+
