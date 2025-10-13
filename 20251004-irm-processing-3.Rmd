@@ -18,7 +18,7 @@ renv::restore()
 #- --------- ----- Load the data ----------------------------------------------
 
 ```{r}
-all_irm_years = read_delim("zaf-nt-irm-v1.2.txt")
+all_irm_years = read_dta("zaf-nt-irm-v1.2.dta")
 ```
 
 #--------------- Columns we will pivot ----------------------------------------
@@ -78,6 +78,6 @@ left_join(exp_wide, by = "proj_id")
 # --------------------- Write ------------------------------------------------
 
 ```{r}
-write_delim(all_irm_years, "zaf-nt-irm-v1.3.txt")
+write_dta(all_irm_years, "zaf-nt-irm-v1.3.dta")
 ```
 
