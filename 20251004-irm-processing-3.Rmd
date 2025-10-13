@@ -72,46 +72,7 @@ left_join(exp_wide, by = "proj_id")
 ```
 
 
-# ---------------- Date Tidy-Ups -----------------------------------------------
 
-```{r}
-fix_dates <- function(x) {
-repl <- c(
-"0014-04-01" = "2014-04-01",
-"0200-07-01" = "2000-07-01",
-"0201-11-01" = "2001-11-01",
-"0201-04-01" = "2001-04-01",
-"0202-04-01" = "2002-04-01",
-"0205-06-19" = "2005-06-19",
-"0213-04-01" = "2013-04-01",
-"0214-04-01" = "2014-04-01",
-"0217-02-09" = "2017-02-09",
-"0218-01-15" = "2018-01-15",
-"0222-04-01" = "2022-04-01",
-"1017-03-15" = "2017-03-15",
-"1111-11-11" = "2011-11-11",
-"1924-03-01" = "2024-03-01"
-)
-out <- dplyr::coalesce(unname(repl[x]), x)
-return(out)
-}
-
-
-parse_date <- function(x) suppressWarnings(lubridate::parse_date_time(x, orders = c("ymd", "dmy"))) |> as.Date()
-
-
-all_irm_years_wide <- all_irm_years_wide |>
-mutate(
-dat_start = parse_date(fix_dates(dat_start)),
-# derive start year cleanly from the parsed date
-dat_start_yr = lubridate::year(dat_start),
-# patch a rare malformed completion year
-dat_proj_compl_yr = dplyr::case_when(
-dat_proj_compl_yr %in% c("2615", 2615) ~ 2015L,
-TRUE ~ suppressWarnings(as.integer(dat_proj_compl_yr))
-)
-)
-```
 
 
 # --------------------- Write ------------------------------------------------

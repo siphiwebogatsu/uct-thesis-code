@@ -17,7 +17,7 @@ renv::restore()
 #- --------- ----- Load the data ----------------------------------------------
 
 ```{r}
-all_irm_years = read_delim("zaf-nt-irm-v1.1.txt")
+all_irm_years = read_dta("zaf-nt-irm-v0.1.dta")
 ```
 
 # ----------------- Processing --------------------------------------------------
@@ -87,6 +87,34 @@ dat_proj_compl_yr = lubridate::year(dat_proj_complete)
 )
 ```
 
+# ---------------- Date Tidy-Ups -----------------------------------------------
+
+```{r}
+fix_dates <- function(x) {
+repl <- c(
+"0014-04-01" = "2014-04-01",
+"0200-07-01" = "2000-07-01",
+"0201-11-01" = "2001-11-01",
+"0201-04-01" = "2001-04-01",
+"0202-04-01" = "2002-04-01",
+"0205-06-19" = "2005-06-19",
+"0213-04-01" = "2013-04-01",
+"0214-04-01" = "2014-04-01",
+"0217-02-09" = "2017-02-09",
+"0218-01-15" = "2018-01-15",
+"0222-04-01" = "2022-04-01",
+"1017-03-15" = "2017-03-15",
+"1111-11-11" = "2011-11-11",
+"1924-03-01" = "2024-03-01"
+)
+out <- dplyr::coalesce(unname(repl[x]), x)
+return(out)
+}
+
+
+parse_date <- function(x) suppressWarnings(lubridate::parse_date_time(x, orders = c("ymd", "dmy"))) |> as.Date()
+
+```
 # -------------- Utility: IRM Financial Year Parsing --------------------------
 
 ```{r}
@@ -143,22 +171,88 @@ filter(!(stat_proj %in% completed_status & stat_idms_gate %in% completed_gates))
 bind_rows(all_irm_years_modified)
 ```
 
-# ---- Light standardisation (avoid lowercasing IDs/names) ---------------------
+# ---- Light standardisation (avoid IDs/names) ---------------------
 
 # Only normalise selected categorical fields; keep identifiers & free text intact.
 
 ```{r}
-cat_cols <- c("stat_proj", "stat_idms_gate", "proj_sect", "proj_delivery_mech", "loc_prov")
-all_irm_years <- all_irm_years |>
-mutate(across(any_of(cat_cols), ~ as.factor(.x)))
+cat_cols      <- c("stat_proj", "stat_idms_gate", 
+                   "proj_sect", "proj_delivery_mech",
+                   "loc_prov", "proj_dpt", "stat_idms_gate", 
+                   "stat_commit", "stat_infra_det", 
+                   "fund_budg_prog", "fund_prim", "fund_inv_type", 
+                   " irm_year")
 
-# Peek 
-all_irm_years |> skim()
+all_irm_years <- all_irm_years |>
+                     mutate(across(any_of(cat_cols), ~ as.factor(.x)))
+
+```
+
+# -----  Add variable labels and Reordering ---------------------------------------------------
+```{r}
+all_irm_years = all_irm_years |>
+                 set_variable_labels(
+                   
+    proj_id            = "Project ID",
+    proj_name          = "Project Name",
+    fac_name           = "Facility Name",
+    loc_prov           = "Province", 
+    proj_delivery_mech = "Delivery Mechanism", 
+    proj_dpt           = "Department", 
+    proj_sect          = "Sector",
+    loc_local_munic    = "Local Municipality", 
+    loc_dist_munic     = "District Municipality", 
+    geo_lat            = "Latitude", 
+    geo_long           = "Longitude", 
+    stat_proj          = "Project Status", 
+    stat_idms_gate     = "IDMS Gate", 
+    stat_commit        = "Commitment Status", 
+    stat_infra_det     = "Infrastructure Details", 
+    dat_start          = "Start Date", 
+    dat_proj_complete  = "Completion Date",
+    dat_cstr_start     = "Construction Start Date",
+    dat_est_cstr_end   = "Estimated Construction Completion Date",
+    dat_contr_cstr_end = "Contracted Construction Completion Date", 
+    cost_pf            = "Professional Fees", 
+    cost_cstr          = "Construction Costs", 
+    cost_var           = "Variation Orders", 
+    cost_total         = "Total Project Cost", 
+    budg_main_pf       = "Main Budget Appropriation: Professional Fees", 
+    budg_adj_pf        = "Adjustment Budget Appropriation: Professional Fees",
+    budg_main_cstr     = "Main Budget Appropriation: Construction Costs",
+    budg_adj_cstr      = "Adjustment Budget Appropriation: Construction Costs",, 
+    
+    prjtd_exp_q1       = "Projected Expenditure in Quarter 1",
+    prjtd_exp_q2       = "Projected Expenditure in Quarter 2",
+    prjtd_exp_q3       = "Projected Expenditure in Quarter 3",
+    prjtd_exp_q4       = "Projected Expenditure in Quarter 4",
+    
+    exp_q1             = "Actual Expenditure in Quarter 1", 
+    exp_q2             = "Actual Expenditure in Quarter 2",
+    exp_q3             = "Actual Expenditure in Quarter 3",
+    exp_q4             = "Actual Expenditure in Quarter 4",
+    
+    fund_budg_prog     = "Budget Programme", 
+    fund_prim          = "Primary Funding Source", 
+    fund_inv_type      = "Nature of Investment", 
+    fund_status        = "Funding Status", 
+    irm_year           = "Financial Year"
+                 )
+
+all_irm_years = all_irm_years |>
+                 select(proj_id, proj_name, fac_name, irm_year,
+                        dat_start, dat_cstr_start,dat_est_cstr_end, dat_contr_cstr_end, 
+                        dat_proj_complete,loc_local_munic,loc_dist_munic,geo_lat, 
+                        geo_long, proj_dpt, proj_sect, loc_prov, proj_delivery_mech, 
+                        stat_commit, stat_infra_det, fund_budg_prog, fund_prim, 
+                        fund_inv_type, fund_status, stat_proj, stat_idms_gate,
+                        everything())
+                   
 ```
 
 # -------------------- Write --------------------------------------------------
 
 ```{r}
-write_delim(all_irm_years, "zaf-nt-irm-v1.2.txt")
+write_dta(all_irm_years, "IRM_2015_2025_e1_v1.dta")
 ```
 

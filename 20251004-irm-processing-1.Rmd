@@ -22,7 +22,7 @@ if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
 
 pacman::p_load(
   tidyverse, readxl, sf, lubridate, stringdist,
-  skimr, haven
+  skimr, haven, labelled
 )
 ```
 
@@ -66,7 +66,7 @@ all_irm_years=  all_irm_years |>
     `projectedexpenditureq1`, `projectedexpenditureq2`, `projectedexpenditureq3`, `projectedexpenditureq4`, 
     `actualexpenditureq1`, `actualexpenditureq2`, `actualexpenditureq3`, `actualexpenditureq4`, 
     `budgetprogramme`, `primaryfundingsource`, natureofinvestment, `fundingstatus`,
-    projectcoordinator, irm_year
+     irm_year
   ) |>
   
   rename(
@@ -87,7 +87,6 @@ all_irm_years=  all_irm_years |>
     stat_infra_det     = infrastructuredetails, 
     dat_start          = `projectstartdate`, 
     dat_proj_complete  = `projectcompletiondate`,
-    dat_est_cstr       = `estimatedconstructionenddate`,
     dat_cstr_start     = `constructionstartdate`,
     dat_est_cstr_end   = `estimatedconstructionenddate`,
     dat_contr_cstr_end = `contractedconstructionenddate`, 
@@ -114,7 +113,7 @@ all_irm_years=  all_irm_years |>
     fund_prim          =`primaryfundingsource`, 
     fund_inv_type      = natureofinvestment, 
     fund_status        = `fundingstatus`, 
-    proj_coord          = projectcoordinator
+   
   )
 
 
@@ -150,7 +149,7 @@ all_irm_years = all_irm_years |>
       )
 
 # Ensure IDMS gate aligns with project status
-all_irm_years <- all_irm_years |>
+all_irm_years = all_irm_years |>
 mutate(
     stat_idms_gate = case_when(
     # Construction phases -> Works
@@ -249,8 +248,8 @@ rm(flag_inconsistent)
 # -------------------- Write the 1st version of the data ----------------------
 
 ```{r}
-# write this version 
-write_delim(all_irm_years, "zaf-nt-irm-v1.1.txt")
+# write this version
+write_dta(all_irm_years, "zaf-nt-irm-v0.1.dta")
 ```
 
 
