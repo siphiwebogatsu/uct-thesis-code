@@ -48,7 +48,7 @@ all_irm_years |> skim()
 ```
 
 
-#--------------------- Standardize the naming convention ------------------
+#--------------------- Standardize the naming convention -----------------------
 
 ```{r}
 # Keep only columns you need, then rename to concise snake_case
@@ -244,12 +244,238 @@ all_irm_years = anti_join(all_irm_years, flag_inconsistent, by = "proj_id")
 rm(flag_inconsistent)
 ```
 
-
-# -------------------- Write the 1st version of the data ----------------------
+# ----------------- Tidying up Date-related variables --------------------------
 
 ```{r}
-# write this version
-write_dta(all_irm_years, "zaf-nt-irm-v0.1.dta")
+# Keep this list small, auditable, and easy to extend.
+fix_dates = function(x) {
+  
+      repl = c(
+      # dat_start fixes
+      "0014-04-01" = "2014-04-01",
+      "0200-07-01" = "2000-07-01",
+      "0201-11-01" = "2001-11-01",
+      "0201-04-01" = "2001-04-01",
+      "0202-04-01" = "2002-04-01",
+      "0203-12-01" = "2003-12-01",
+      "0204-02-04" = "2004-02-04",
+      "0204-04-01" = "2004-04-01",
+      "0205-06-19" = "2005-06-19",
+      "0213-04-01" = "2013-04-01",
+      "0214-04-01" = "2014-04-01",
+      "0217-02-09" = "2017-02-09",
+      "0218-01-15" = "2018-01-15",
+      "0218-11-01" = "2018-11-01",
+      "0222-04-01" = "2022-04-01",
+      "0224-04-06" = "2024-04-06",
+      "1017-03-15" = "2017-03-15",
+      "1111-11-11" = "2011-11-11",
+      "1924-03-01" = "2024-03-01",
+      "1924--03-01"= "2024-03-01",
+      "0014-04-01" = "2014-04-01",
+      "0200-07-01" = "2000-07-01",
+      "0201-11-01" = "2001-11-01",
+      "0201-04-01" = "2001-04-01",
+      "0202-04-01" = "2002-04-01",
+      "0205-06-19" = "2005-06-19",
+      "0213-04-01" = "2013-04-01",
+      "0214-04-01" = "2014-04-01",
+      "0217-02-09" = "2017-02-09",
+      "0218-01-15" = "2018-01-15",
+      "0222-04-01" = "2022-04-01",
+      "1017-03-15" = "2017-03-15",
+      "1111-11-11" = "2011-11-11",
+      "1924-03-01" = "2024-03-01",
+      
+      # completion
+      "2615-06-12" = "2015-06-12",
+      # est construction end
+      "1111-11-12" = "2011-11-12"
+)
+      
+      # Replace only when exact key matches
+      out <- dplyr::coalesce(unname(repl[x]), x)
+      return(out)
+}
+
+
+# Apply targeted date fixes
+all_irm_years = all_irm_years |>
+                    mutate(
+                      
+                    dat_start          = fix_dates(dat_start),
+                    dat_proj_complete  = fix_dates(dat_proj_complete),
+                    dat_est_cstr_end   = fix_dates(dat_est_cstr_end), 
+                    dat_contr_cstr_end = fix_dates(dat_contr_cstr_end) 
+                    
+                    )
+
+
+
+# Parse dates and derive project completion year
+
+parse_date <- function(x) {
+  
+# accepts "YYYY-mm-dd"; tries dmy if needed
+  
+suppressWarnings(lubridate::parse_date_time(x, orders = c("ymd", "dmy"))) |> as.Date()
+}
+
+
+all_irm_years = all_irm_years |>
+          mutate(
+                  dat_start = parse_date(dat_start),
+                  dat_proj_complete = parse_date(dat_proj_complete),
+                  dat_cstr_start = parse_date(dat_cstr_start),
+                  dat_est_cstr_end = parse_date(dat_est_cstr_end),
+                  dat_contr_cstr_end = parse_date(dat_contr_cstr_end),
+                  dat_proj_compl_yr = lubridate::year(dat_proj_complete)
+          )
+```
+
+
+# -------------- Utility: IRM Financial Year Parsing --------------------------
+
+```{r}
+# irm_year is "15_16" meaning FY 2015/16. We'll map to start/end calendar years.
+fy_start_year <- function(fy) as.integer(paste0(substr(fy, 1, 2))) + 2000
+fy_end_year <- function(fy) as.integer(paste0(substr(fy, 4, 5))) + 2000
+
+```
+
+# --------------- Test: How often completion year == last IRM FY --------------
+
+```{r}
+match_compl_years = all_irm_years |>
+                        select(proj_id, proj_sect, irm_year, dat_proj_compl_yr, stat_proj, stat_idms_gate) |>
+                        filter(!is.na(dat_proj_compl_yr)) |>
+                        group_by(proj_id) |>
+                        mutate(last_fy = dplyr::last(irm_year)) |>
+                        slice_tail(n = 1) |>
+                        ungroup() |>
+                        mutate(
+                            fy1   = fy_start_year(last_fy),
+                            fy2   = fy_end_year(last_fy),
+                            match = as.integer(dat_proj_compl_yr %in% c(fy1, fy2))
+                        )
+
+
+prop_matches = 100 * mean(match_compl_years$match)
+message(sprintf("Share where completion year matches last IRM FY: %.1f%%", prop_matches))
+```
+
+#-------------- Impute missing completion year for completed projects ---------- 
+
+```{r}
+completed_status = c("Final Completion", "Practical Completion (100%)", "Terminated")
+completed_gates  = c("Stage 6: Handover", "Stage 7: Close out")
+
+
+all_irm_years_modified = all_irm_years |>
+                            filter(stat_proj %in% completed_status, stat_idms_gate %in% completed_gates) |>
+                            group_by(proj_id) |>
+                            mutate(
+                            last_fy           = dplyr::last(irm_year),
+                            dat_proj_compl_yr = dplyr::coalesce(dat_proj_compl_yr, fy_end_year(last_fy)),
+                            
+                            # Guard: if last_fy is beyond data horizon (e.g., 26_27, 27_28), leave as NA
+                            dat_proj_compl_yr = ifelse(fy_end_year(last_fy) > 2025, NA_integer_, dat_proj_compl_yr)
+                            ) |>
+                            ungroup() |>
+                            select(-last_fy)
+
+
+# Keep everything else as-is and bind back
+all_irm_years = all_irm_years |>
+                  filter(!(stat_proj %in% completed_status & 
+                           stat_idms_gate %in% completed_gates)) |>
+                  bind_rows(all_irm_years_modified)
+```
+
+# ---- Light standardisation (avoid IDs/names) ---------------------
+
+# Only normalise selected categorical fields; keep identifiers & free text intact.
+
+```{r}
+cat_cols  = c("stat_proj", "stat_idms_gate", 
+               "proj_sect", "proj_delivery_mech",
+                "loc_prov", "proj_dpt", "stat_idms_gate", 
+                 "stat_commit", "stat_infra_det", 
+                  "fund_budg_prog", "fund_prim", "fund_inv_type", 
+                   "irm_year")
+
+all_irm_years = all_irm_years |>
+                     mutate(across(any_of(cat_cols), ~ as.factor(.x)))
+
+```
+
+# -----  Add variable labels and Reordering ---------------------------------------------------
+```{r}
+all_irm_years = all_irm_years |>
+                 set_variable_labels(
+                   
+    proj_id            = "Project ID",
+    proj_name          = "Project Name",
+    fac_name           = "Facility Name",
+    loc_prov           = "Province", 
+    proj_delivery_mech = "Delivery Mechanism", 
+    proj_dpt           = "Department", 
+    proj_sect          = "Sector",
+    loc_local_munic    = "Local Municipality", 
+    loc_dist_munic     = "District Municipality", 
+    geo_lat            = "Latitude", 
+    geo_long           = "Longitude", 
+    stat_proj          = "Project Status", 
+    stat_idms_gate     = "IDMS Gate", 
+    stat_commit        = "Commitment Status", 
+    stat_infra_det     = "Infrastructure Details", 
+    dat_start          = "Start Date", 
+    dat_proj_complete  = "Completion Date",
+    dat_cstr_start     = "Construction Start Date",
+    dat_est_cstr_end   = "Estimated Construction Completion Date",
+    dat_contr_cstr_end = "Contracted Construction Completion Date", 
+    cost_pf            = "Professional Fees", 
+    cost_cstr          = "Construction Costs", 
+    cost_var           = "Variation Orders", 
+    cost_total         = "Total Project Cost", 
+    budg_main_pf       = "Main Budget Appropriation: Professional Fees", 
+    budg_adj_pf        = "Adjustment Budget Appropriation: Professional Fees",
+    budg_main_cstr     = "Main Budget Appropriation: Construction Costs",
+    budg_adj_cstr      = "Adjustment Budget Appropriation: Construction Costs",, 
+    
+    prjtd_exp_q1       = "Projected Expenditure in Quarter 1",
+    prjtd_exp_q2       = "Projected Expenditure in Quarter 2",
+    prjtd_exp_q3       = "Projected Expenditure in Quarter 3",
+    prjtd_exp_q4       = "Projected Expenditure in Quarter 4",
+    
+    exp_q1             = "Actual Expenditure in Quarter 1", 
+    exp_q2             = "Actual Expenditure in Quarter 2",
+    exp_q3             = "Actual Expenditure in Quarter 3",
+    exp_q4             = "Actual Expenditure in Quarter 4",
+    
+    fund_budg_prog     = "Budget Programme", 
+    fund_prim          = "Primary Funding Source", 
+    fund_inv_type      = "Nature of Investment", 
+    fund_status        = "Funding Status", 
+    irm_year           = "Financial Year"
+                 )
+# Arrange the variables
+all_irm_years = all_irm_years |>
+                 select(proj_id, proj_name, fac_name, irm_year,
+                        dat_start, dat_cstr_start,dat_est_cstr_end, dat_contr_cstr_end, 
+                        dat_proj_complete,loc_local_munic,loc_dist_munic,geo_lat, 
+                        geo_long, proj_dpt, proj_sect, loc_prov, proj_delivery_mech, 
+                        stat_commit, stat_infra_det, fund_budg_prog, fund_prim, 
+                        fund_inv_type, fund_status, stat_proj, stat_idms_gate,
+                        everything())
+                   
+```
+
+
+# -------------------- Write --------------------------------------------------
+
+```{r}
+write_dta(all_irm_years, "IRM_2015_2025_e1_v1.dta")
 ```
 
 
